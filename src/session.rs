@@ -88,22 +88,30 @@ pub struct SessionManager {
     sessions: DashMap<String, Session>,
     ip_counts: DashMap<IpAddr, usize>,
     max_per_ip: usize,
+    max_total: usize,
     messages_per_second: u32,
     submits_per_minute: u32,
 }
 
 impl SessionManager {
-    pub fn new(max_per_ip: usize, messages_per_second: u32, submits_per_minute: u32) -> Self {
+    pub fn new(max_per_ip: usize, max_total: usize, messages_per_second: u32, submits_per_minute: u32) -> Self {
         Self {
             sessions: DashMap::new(),
             ip_counts: DashMap::new(),
             max_per_ip,
+            max_total,
             messages_per_second,
             submits_per_minute,
         }
     }
 
     pub fn create_session(&self, ip: IpAddr) -> Option<Session> {
+        // Check global limit FIRST
+        if self.sessions.len() >= self.max_total {
+            return None;
+        }
+        
+        // Then check per-IP limit
         let mut count = self.ip_counts.entry(ip).or_insert(0);
         if *count >= self.max_per_ip {
             return None;

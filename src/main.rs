@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
 
     let session_manager = Arc::new(SessionManager::new(
         config.server.max_connections_per_ip,
+        config.server.max_connections,
         config.limits.messages_per_second,
         config.limits.submits_per_minute,
     ));

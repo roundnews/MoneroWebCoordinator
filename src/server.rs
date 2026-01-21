@@ -97,8 +97,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
     let session = match state.session_manager.create_session(ip) {
         Some(s) => s,
         None => {
-            warn!("Connection limit exceeded for IP: {}", ip);
-            let msg = ServerMessage::error(None, ErrorCode::RateLimit, "Too many connections from this IP address");
+            warn!("Connection rejected for IP: {} (limit exceeded)", ip);
+            let msg = ServerMessage::error(None, ErrorCode::RateLimit, "Connection limit exceeded");
             let _ = socket.send(Message::Text(serde_json::to_string(&msg).unwrap())).await;
             return;
         }
