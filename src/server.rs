@@ -91,7 +91,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
         Some(s) => s,
         None => {
             warn!("Connection limit exceeded for IP: {}", ip);
-            let msg = ServerMessage::error(None, ErrorCode::RateLimit, "Too many connections");
+            let msg = ServerMessage::error(None, ErrorCode::RateLimit, "Too many connections from this IP address");
             let _ = socket.send(Message::Text(serde_json::to_string(&msg).unwrap())).await;
             return;
         }
@@ -170,8 +170,8 @@ async fn handle_message(
             // Placeholder - full validation in Part 4
             Some(ServerMessage::SubmitResult {
                 id,
-                status: crate::protocol::SubmitStatus::Accepted,
-                message: Some("Placeholder".to_string()),
+                status: crate::protocol::SubmitStatus::Error,
+                message: Some("Submit validation not yet implemented".to_string()),
             })
         }
     }
