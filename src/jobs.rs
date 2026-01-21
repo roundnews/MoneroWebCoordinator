@@ -97,20 +97,19 @@ fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
     }
     
     // Target = 2^256 / difficulty
-    // We compute this by setting target to max value then dividing
-    // Using the fact that for Monero's compact target format,
-    // we can compute: target = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF / difficulty
-    // and place result in the high bytes (little-endian format)
+    // We compute this by dividing the maximum 128-bit value by difficulty
+    // and placing the result in the upper 16 bytes of the 32-byte target array
+    // (in little-endian format, bytes 16-31)
     
     let mut target = [0u8; 32];
     
     // For difficulties that fit in u64, use simplified calculation
-    // High 64 bits of (2^256-1) / difficulty approximation
-    let hi: u128 = u128::MAX / difficulty as u128;
-    let hi_bytes = hi.to_le_bytes();
+    // Compute high 128 bits of (2^256-1) / difficulty approximation
+    let target_value: u128 = u128::MAX / difficulty as u128;
+    let target_bytes = target_value.to_le_bytes();
     
     // Place in upper portion of target (little-endian, so bytes 16-31)
-    target[16..32].copy_from_slice(&hi_bytes);
+    target[16..32].copy_from_slice(&target_bytes);
     
     target
 }

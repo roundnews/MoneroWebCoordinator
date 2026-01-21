@@ -41,6 +41,7 @@ impl SubmissionValidator {
 
     /// Compute hash of the blob (simplified - real implementation needs RandomX)
     /// For now, use Keccak256 as placeholder until RandomX integration
+    /// TODO: Replace with proper RandomX hashing for production use
     pub fn compute_hash(&self, blob: &[u8]) -> [u8; 32] {
         let mut hasher = Keccak256::new();
         hasher.update(blob);
