@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target
+
+# Configuration (may contain sensitive data)
+config.toml
+.env
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

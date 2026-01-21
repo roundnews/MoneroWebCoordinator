@@ -1,0 +1,47 @@
+# Monero Web Coordinator Configuration
+
+[server]
+# Address to bind the HTTP/WebSocket server
+bind_addr = "0.0.0.0:8080"
+# WebSocket endpoint path
+ws_path = "/ws"
+# Maximum concurrent connections
+max_connections = 5000
+# Maximum connections per IP address
+max_connections_per_ip = 20
+# Maximum WebSocket frame size in bytes
+max_frame_bytes = 32768
+
+[monerod]
+# Local monerod JSON-RPC URL (NEVER expose this publicly)
+rpc_url = "http://127.0.0.1:18081"
+# Your Monero wallet address for block rewards
+wallet_address = "YOUR_XMR_ADDRESS_HERE"
+# Size of reserved region in block template (bytes)
+reserve_size = 8
+# RPC request timeout in milliseconds
+rpc_timeout_ms = 5000
+
+[jobs]
+# Job time-to-live in milliseconds
+job_ttl_ms = 30000
+# Template refresh interval in milliseconds
+template_refresh_interval_ms = 20000
+# Grace period for stale job submissions
+stale_job_grace_ms = 10000
+
+[limits]
+# Maximum block submissions per minute per session
+submits_per_minute = 10
+# Maximum share submissions per minute per session
+shares_per_minute = 120
+# Maximum messages per second per session
+messages_per_second = 20
+
+[metrics]
+# Enable Prometheus metrics endpoint
+enable = true
+# Metrics server bind address
+bind_addr = "127.0.0.1:9100"
+# Metrics endpoint path
+path = "/metrics"
