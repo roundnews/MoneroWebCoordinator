@@ -1,0 +1,110 @@
+use dashmap::DashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+use crate::template::TemplateState;
+
+#[derive(Clone, Debug)]
+pub struct Job {
+    pub job_id: String,
+    pub template_id: u64,
+    pub blob_hex: String,
+    pub reserved_offset: usize,
+    pub reserved_value: Vec<u8>,
+    pub target_hex: String,
+    pub height: u64,
+    pub seed_hash: String,
+    pub created_at: Instant,
+}
+
+pub struct JobManager {
+    jobs: DashMap<String, Job>,
+    counter: AtomicU64,
+    stale_grace_ms: u64,
+}
+
+impl JobManager {
+    pub fn new(stale_grace_ms: u64) -> Self {
+        Self {
+            jobs: DashMap::new(),
+            counter: AtomicU64::new(0),
+            stale_grace_ms,
+        }
+    }
+
+    pub fn create_job(&self, template: &TemplateState, session_id: &str) -> Job {
+        let seq = self.counter.fetch_add(1, Ordering::SeqCst);
+        let job_id = format!("{:016x}", seq);
+        
+        // Create unique reserved value from session + sequence
+        let mut reserved = vec![0u8; template.reserve_size as usize];
+        let session_bytes = session_id.as_bytes();
+        let seq_bytes = seq.to_le_bytes();
+        
+        for (i, byte) in session_bytes.iter().chain(seq_bytes.iter()).take(reserved.len()).enumerate() {
+            reserved[i] = *byte;
+        }
+
+        // Modify blob with reserved value
+        let mut blob = hex::decode(&template.blocktemplate_blob).unwrap_or_default();
+        let offset = template.reserved_offset;
+        for (i, byte) in reserved.iter().enumerate() {
+            if offset + i < blob.len() {
+                blob[offset + i] = *byte;
+            }
+        }
+
+        // Calculate target from difficulty
+        let target = difficulty_to_target(template.difficulty);
+
+        let job = Job {
+            job_id: job_id.clone(),
+            template_id: template.template_id,
+            blob_hex: hex::encode(&blob),
+            reserved_offset: offset,
+            reserved_value: reserved,
+            target_hex: hex::encode(&target),
+            height: template.height,
+            seed_hash: template.seed_hash.clone(),
+            created_at: Instant::now(),
+        };
+
+        self.jobs.insert(job_id, job.clone());
+        job
+    }
+
+    pub fn get_job(&self, job_id: &str) -> Option<Job> {
+        self.jobs.get(job_id).map(|j| j.clone())
+    }
+
+    pub fn is_stale(&self, job: &Job, current_template_id: u64) -> bool {
+        if job.template_id == current_template_id {
+            return false;
+        }
+        job.created_at.elapsed().as_millis() > self.stale_grace_ms as u128
+    }
+
+    pub fn cleanup_old_jobs(&self, max_age_ms: u64) {
+        self.jobs.retain(|_, job| {
+            job.created_at.elapsed().as_millis() < max_age_ms as u128
+        });
+    }
+}
+
+fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
+    if difficulty == 0 {
+        return [0xff; 32];
+    }
+    
+    // Target = 2^256 / difficulty (simplified for compact target)
+    let mut target = [0u8; 32];
+    let max_val: u128 = u64::MAX as u128;
+    let result = max_val / difficulty as u128;
+    
+    // Set last 8 bytes (little endian target format)
+    for (i, byte) in result.to_le_bytes().iter().take(8).enumerate() {
+        target[24 + i] = *byte;
+    }
+    
+    target
+}
