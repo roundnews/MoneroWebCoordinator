@@ -1,0 +1,26 @@
+[Unit]
+Description=Monero Web Coordinator
+After=network.target
+
+[Service]
+Type=simple
+User=coordinator
+Group=coordinator
+WorkingDirectory=/opt/coordinator
+ExecStart=/opt/coordinator/monero-web-coordinator
+Restart=always
+RestartSec=5
+
+Environment=RUST_LOG=monero_web_coordinator=info
+Environment=CONFIG_PATH=/opt/coordinator/config.toml
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/
+ReadWritePaths=/opt/coordinator/logs
+
+[Install]
+WantedBy=multi-user.target
