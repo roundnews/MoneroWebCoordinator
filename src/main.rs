@@ -1,12 +1,16 @@
 use anyhow::Result;
 use tracing::info;
+use std::sync::Arc;
 
 mod config;
 mod error;
+mod protocol;
 mod rpc;
 mod server;
+mod session;
 mod template;
 
+use session::SessionManager;
 use template::TemplateManager;
 
 #[tokio::main]
@@ -19,25 +23,23 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    info!("Starting Monero Web Coordinator");
+    info!("Starting Coordinator");
 
     let config = config::load_config()?;
     info!("Configuration loaded");
-    info!("Server bind address: {}", config.server.bind_addr);
-    info!("Monerod RPC: {}", config.monerod.rpc_url);
+    info!("Server: {}", config.server.bind_addr);
 
-    // Create template manager
+    let session_manager = Arc::new(SessionManager::new(config.server.max_connections_per_ip));
+    
     let mut template_manager = TemplateManager::new(&config)?;
     let template_rx = template_manager.subscribe();
     let rpc_client = template_manager.client();
 
-    // Spawn template manager task
     tokio::spawn(async move {
         template_manager.run().await;
     });
 
-    // Start server with template subscription
-    server::run(config, template_rx, rpc_client).await?;
+    server::run(config, template_rx, rpc_client, session_manager).await?;
 
     Ok(())
 }
