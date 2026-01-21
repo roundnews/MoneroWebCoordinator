@@ -68,13 +68,13 @@ pub struct DaemonInfo {
 }
 
 impl MonerodClient {
-    pub fn new(rpc_url: String, timeout_ms: u64) -> Self {
+    pub fn new(rpc_url: String, timeout_ms: u64) -> Result<Self, RpcError> {
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
-            .expect("Failed to create HTTP client");
+            .map_err(|e| RpcError::Http(e))?;
         
-        Self { client, rpc_url }
+        Ok(Self { client, rpc_url })
     }
 
     async fn call<P: Serialize, R: for<'de> Deserialize<'de>>(

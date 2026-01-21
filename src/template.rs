@@ -49,15 +49,15 @@ pub struct TemplateManager {
 }
 
 impl TemplateManager {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config) -> Result<Self, RpcError> {
         let client = Arc::new(MonerodClient::new(
             config.monerod.rpc_url.clone(),
             config.monerod.rpc_timeout_ms,
-        ));
+        )?);
 
         let (sender, receiver) = watch::channel(None);
 
-        Self {
+        Ok(Self {
             client,
             wallet_address: config.monerod.wallet_address.clone(),
             reserve_size: config.monerod.reserve_size,
@@ -65,7 +65,7 @@ impl TemplateManager {
             sender,
             receiver,
             template_counter: 0,
-        }
+        })
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Option<TemplateState>> {

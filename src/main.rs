@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     info!("Monerod RPC: {}", config.monerod.rpc_url);
 
     // Create template manager
-    let mut template_manager = TemplateManager::new(&config);
+    let mut template_manager = TemplateManager::new(&config)?;
     let template_rx = template_manager.subscribe();
     let rpc_client = template_manager.client();
 
