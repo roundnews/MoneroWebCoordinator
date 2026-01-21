@@ -1,3 +1,5 @@
+use sha3::{Digest, Keccak256};
+
 use crate::jobs::Job;
 use crate::error::CoordinatorError;
 
@@ -37,6 +39,18 @@ impl SubmissionValidator {
         Ok(blob)
     }
 
+    /// Compute hash of the blob (simplified - real implementation needs RandomX)
+    /// For now, use Keccak256 as placeholder until RandomX integration
+    pub fn compute_hash(&self, blob: &[u8]) -> [u8; 32] {
+        let mut hasher = Keccak256::new();
+        hasher.update(blob);
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
+    }
+
+    /// Check if hash meets the target difficulty
     pub fn check_meets_target(&self, hash: &[u8; 32], target: &[u8; 32]) -> bool {
         // Compare hash against target (both little-endian)
         for i in (0..32).rev() {

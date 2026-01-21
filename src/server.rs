@@ -266,21 +266,55 @@ async fn handle_message(
                 });
             }
 
-            // Validate blob
-            if let Err(e) = state.validator.validate_blob(&blob_hex, &job) {
+            // Validate blob structure
+            let blob = match state.validator.validate_blob(&blob_hex, &job) {
+                Ok(b) => b,
+                Err(e) => {
+                    state.metrics.inc_rejected();
+                    return Some(ServerMessage::SubmitResult {
+                        id, status: SubmitStatus::Rejected,
+                        message: Some(e.to_string()),
+                    });
+                }
+            };
+
+            // Compute hash and verify it meets target
+            let hash = state.validator.compute_hash(&blob);
+            let target = hex::decode(&job.target_hex).unwrap_or_default();
+            let mut target_arr = [0u8; 32];
+            if target.len() == 32 {
+                target_arr.copy_from_slice(&target);
+            }
+
+            if !state.validator.check_meets_target(&hash, &target_arr) {
                 state.metrics.inc_rejected();
                 return Some(ServerMessage::SubmitResult {
                     id, status: SubmitStatus::Rejected,
-                    message: Some(e.to_string()),
+                    message: Some("Hash does not meet target".into()),
                 });
             }
 
-            info!("Valid submission for job {}", job_id);
-            state.metrics.inc_accepted();
-            Some(ServerMessage::SubmitResult {
-                id, status: SubmitStatus::Accepted,
-                message: None,
-            })
+            info!("Valid submission for job {} - hash meets target!", job_id);
+            
+            // Submit block to monerod
+            match state.rpc_client.submit_block(&blob_hex).await {
+                Ok(status) => {
+                    info!("Block submitted to daemon: {}", status);
+                    state.metrics.inc_accepted();
+                    Some(ServerMessage::SubmitResult {
+                        id, status: SubmitStatus::Accepted,
+                        message: Some(format!("Block submitted: {}", status)),
+                    })
+                }
+                Err(e) => {
+                    warn!("Block submission failed: {}", e);
+                    state.metrics.inc_rejected();
+                    Some(ServerMessage::SubmitResult {
+                        id, status: SubmitStatus::Rejected,
+                        message: Some(format!("Submission failed: {}", e)),
+                    })
+                }
+            }
         }
     }
 }

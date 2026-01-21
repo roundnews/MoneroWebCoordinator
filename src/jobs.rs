@@ -92,19 +92,25 @@ impl JobManager {
 }
 
 fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
-    if difficulty == 0 {
+    if difficulty <= 1 {
         return [0xff; 32];
     }
     
-    // Target = 2^256 / difficulty (simplified for compact target)
-    let mut target = [0u8; 32];
-    let max_val: u128 = u64::MAX as u128;
-    let result = max_val / difficulty as u128;
+    // Target = 2^256 / difficulty
+    // We compute this by setting target to max value then dividing
+    // Using the fact that for Monero's compact target format,
+    // we can compute: target = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF / difficulty
+    // and place result in the high bytes (little-endian format)
     
-    // Set last 8 bytes (little endian target format)
-    for (i, byte) in result.to_le_bytes().iter().take(8).enumerate() {
-        target[24 + i] = *byte;
-    }
+    let mut target = [0u8; 32];
+    
+    // For difficulties that fit in u64, use simplified calculation
+    // High 64 bits of (2^256-1) / difficulty approximation
+    let hi: u128 = u128::MAX / difficulty as u128;
+    let hi_bytes = hi.to_le_bytes();
+    
+    // Place in upper portion of target (little-endian, so bytes 16-31)
+    target[16..32].copy_from_slice(&hi_bytes);
     
     target
 }
