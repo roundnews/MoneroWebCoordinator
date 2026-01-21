@@ -3,7 +3,11 @@ use tracing::info;
 
 mod config;
 mod error;
+mod rpc;
 mod server;
+mod template;
+
+use template::TemplateManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,15 +21,23 @@ async fn main() -> Result<()> {
 
     info!("Starting Monero Web Coordinator");
 
-    // Load configuration
     let config = config::load_config()?;
-    info!("Configuration loaded successfully");
-    info!("Server will bind to: {}", config.server.bind_addr);
-    info!("WebSocket path: {}", config.server.ws_path);
-    info!("Monerod RPC URL: {}", config.monerod.rpc_url);
+    info!("Configuration loaded");
+    info!("Server bind address: {}", config.server.bind_addr);
+    info!("Monerod RPC: {}", config.monerod.rpc_url);
 
-    // Start the server
-    server::run(config).await?;
+    // Create template manager
+    let mut template_manager = TemplateManager::new(&config);
+    let template_rx = template_manager.subscribe();
+    let rpc_client = template_manager.client();
+
+    // Spawn template manager task
+    tokio::spawn(async move {
+        template_manager.run().await;
+    });
+
+    // Start server with template subscription
+    server::run(config, template_rx, rpc_client).await?;
 
     Ok(())
 }
