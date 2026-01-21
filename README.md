@@ -238,6 +238,97 @@ monerod --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18081
 
 Change `bind_addr` in `config.toml` to use a different port.
 
+## Deployment
+
+### Docker
+
+Build and run with Docker:
+
+```bash
+# Build image
+docker build -t monero-coordinator .
+
+# Create config
+cp config.example.toml config.toml
+# Edit config.toml with your settings
+
+# Run container
+docker run -d \
+  --name coordinator \
+  -p 8080:8080 \
+  -p 9100:9100 \
+  -v $(pwd)/config.toml:/app/config.toml:ro \
+  monero-coordinator
+```
+
+Or use docker-compose:
+
+```bash
+cp config.example.toml config.toml
+# Edit config.toml
+docker-compose up -d
+```
+
+### Systemd (Linux)
+
+For native Linux deployment:
+
+```bash
+# Build
+cargo build --release
+
+# Install (requires root)
+sudo ./deploy/install.sh
+
+# Configure
+sudo nano /opt/coordinator/config.toml
+
+# Start
+sudo systemctl start coordinator
+sudo systemctl enable coordinator
+
+# View logs
+journalctl -u coordinator -f
+```
+
+### Health Checks
+
+- HTTP health: `curl http://localhost:8080/health`
+- Metrics: `curl http://localhost:9100/metrics`
+- Stats: `curl http://localhost:8080/stats`
+
+### Reverse Proxy (nginx example)
+
+```nginx
+upstream coordinator {
+    server 127.0.0.1:8080;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location /ws {
+        proxy_pass http://coordinator;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400;
+    }
+
+    location / {
+        proxy_pass http://coordinator;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
 ## Contributing
 
 Contributions are welcome! Please:

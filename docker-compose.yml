@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  coordinator:
+    build: .
+    container_name: monero-coordinator
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "9100:9100"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+    environment:
+      - RUST_LOG=monero_web_coordinator=info
+      - CONFIG_PATH=/app/config.toml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - coordinator-net
+
+networks:
+  coordinator-net:
+    driver: bridge

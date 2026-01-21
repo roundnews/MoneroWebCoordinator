@@ -1,0 +1,8 @@
+target/
+.git/
+.gitignore
+*.log
+config.toml
+.env
+README.md
+deploy/
