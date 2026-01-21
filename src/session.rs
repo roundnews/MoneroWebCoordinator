@@ -144,9 +144,12 @@ impl SessionManager {
 
     pub fn remove_session(&self, id: &str) {
         if let Some((_, session)) = self.sessions.remove(id) {
-            self.ip_counts.entry(session.ip).and_modify(|c| {
-                *c = c.saturating_sub(1);
-            });
+            let mut count = self.ip_counts.entry(session.ip).or_insert(0);
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                drop(count);
+                self.ip_counts.remove(&session.ip);
+            }
         }
     }
 
