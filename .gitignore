@@ -1,6 +1,5 @@
 # Rust build artifacts
 /target
-Cargo.lock
 
 # Configuration (may contain sensitive data)
 config.toml
