@@ -5,7 +5,9 @@ use std::sync::Arc;
 mod config;
 mod error;
 mod jobs;
+mod metrics;
 mod protocol;
+mod ratelimit;
 mod rpc;
 mod server;
 mod session;
@@ -13,6 +15,7 @@ mod template;
 mod validator;
 
 use jobs::JobManager;
+use metrics::Metrics;
 use session::SessionManager;
 use template::TemplateManager;
 use validator::SubmissionValidator;
@@ -31,9 +34,14 @@ async fn main() -> Result<()> {
 
     let config = config::load_config()?;
     info!("Configuration loaded");
-    info!("Server: {}", config.server.bind_addr);
 
-    let session_manager = Arc::new(SessionManager::new(config.server.max_connections_per_ip));
+    let metrics = Arc::new(Metrics::new());
+
+    let session_manager = Arc::new(SessionManager::new(
+        config.server.max_connections_per_ip,
+        config.limits.messages_per_second,
+        config.limits.submits_per_minute,
+    ));
     let job_manager = Arc::new(JobManager::new(config.jobs.stale_job_grace_ms));
     let validator = Arc::new(SubmissionValidator::new());
     
@@ -41,8 +49,17 @@ async fn main() -> Result<()> {
     let template_rx = template_manager.subscribe();
     let rpc_client = template_manager.client();
 
+    // Start metrics server
+    let metrics_config = config.metrics.clone();
+    let metrics_clone = metrics.clone();
     tokio::spawn(async move {
-        template_manager.run().await;
+        metrics::run_metrics_server(metrics_config, metrics_clone).await;
+    });
+
+    // Template manager
+    let metrics_tpl = metrics.clone();
+    tokio::spawn(async move {
+        template_manager.run(metrics_tpl).await;
     });
 
     // Periodic job cleanup
@@ -56,7 +73,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    server::run(config, template_rx, rpc_client, session_manager, job_manager, validator).await?;
+    server::run(config, template_rx, rpc_client, session_manager, job_manager, validator, metrics).await?;
 
     Ok(())
 }

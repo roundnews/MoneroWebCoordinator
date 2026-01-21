@@ -18,6 +18,7 @@ use tokio::sync::watch;
 
 use crate::config::Config;
 use crate::jobs::JobManager;
+use crate::metrics::Metrics;
 use crate::protocol::{ClientMessage, ServerMessage, ErrorCode, SubmitStatus};
 use crate::rpc::MonerodClient;
 use crate::session::{SessionManager, SessionState};
@@ -31,6 +32,7 @@ pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     pub job_manager: Arc<JobManager>,
     pub validator: Arc<SubmissionValidator>,
+    pub metrics: Arc<Metrics>,
     pub config: Config,
 }
 
@@ -41,9 +43,10 @@ pub async fn run(
     session_manager: Arc<SessionManager>,
     job_manager: Arc<JobManager>,
     validator: Arc<SubmissionValidator>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let state = AppState {
-        template_rx, rpc_client, session_manager, job_manager, validator,
+        template_rx, rpc_client, session_manager, job_manager, validator, metrics,
         config: config.clone(),
     };
 
@@ -104,6 +107,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
     let session_id = session.id.clone();
     info!("Session created: {} from {}", session_id, ip);
 
+    state.metrics.inc_connections();
+
     let mut template_rx = state.template_rx.clone();
 
     loop {
@@ -119,6 +124,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
                     if let Some(sess) = state.session_manager.get_session(&session_id) {
                         if sess.state == SessionState::Ready {
                             let job = state.job_manager.create_job(&template, &session_id);
+                            state.metrics.inc_jobs();
                             state.session_manager.update_session(&session_id, |s| {
                                 s.update_job(job.job_id.clone(), job.reserved_value.clone());
                             });
@@ -142,6 +148,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        // Check message rate limit
+                        if !state.session_manager.check_message_limit(&session_id) {
+                            state.metrics.inc_rate_limits();
+                            let msg = ServerMessage::error(None, ErrorCode::RateLimit, "Message rate exceeded");
+                            let _ = socket.send(Message::Text(serde_json::to_string(&msg).unwrap())).await;
+                            continue;
+                        }
+                        state.metrics.inc_messages();
+
                         match serde_json::from_str::<ClientMessage>(&text) {
                             Ok(client_msg) => {
                                 if let Some(response) = handle_message(&state, &session_id, client_msg).await {
@@ -169,6 +184,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
         }
     }
 
+    state.metrics.dec_connections();
     state.session_manager.remove_session(&session_id);
     info!("Session closed: {}", session_id);
 }
@@ -188,6 +204,7 @@ async fn handle_message(
             let template_opt = state.template_rx.borrow().clone();
             if let Some(template) = template_opt {
                 let job = state.job_manager.create_job(&template, session_id);
+                state.metrics.inc_jobs();
                 state.session_manager.update_session(session_id, |s| {
                     s.update_job(job.job_id.clone(), job.reserved_value.clone());
                 });
@@ -214,12 +231,25 @@ async fn handle_message(
             Some(ServerMessage::Pong { id })
         }
         ClientMessage::Submit { id, job_id, blob_hex } => {
+            // Check submit rate limit
+            if !state.session_manager.check_submit_limit(session_id) {
+                state.metrics.inc_rate_limits();
+                return Some(ServerMessage::SubmitResult {
+                    id, status: SubmitStatus::Error,
+                    message: Some("Submit rate exceeded".into()),
+                });
+            }
+            state.metrics.inc_submissions();
+
             let job = match state.job_manager.get_job(&job_id) {
                 Some(j) => j,
-                None => return Some(ServerMessage::SubmitResult {
-                    id, status: SubmitStatus::Rejected,
-                    message: Some("Unknown job".into()),
-                }),
+                None => {
+                    state.metrics.inc_rejected();
+                    return Some(ServerMessage::SubmitResult {
+                        id, status: SubmitStatus::Rejected,
+                        message: Some("Unknown job".into()),
+                    });
+                }
             };
 
             // Check if stale
@@ -229,6 +259,7 @@ async fn handle_message(
             };
             
             if state.job_manager.is_stale(&job, current_template_id) {
+                state.metrics.inc_stale();
                 return Some(ServerMessage::SubmitResult {
                     id, status: SubmitStatus::Stale,
                     message: Some("Job expired".into()),
@@ -237,6 +268,7 @@ async fn handle_message(
 
             // Validate blob
             if let Err(e) = state.validator.validate_blob(&blob_hex, &job) {
+                state.metrics.inc_rejected();
                 return Some(ServerMessage::SubmitResult {
                     id, status: SubmitStatus::Rejected,
                     message: Some(e.to_string()),
@@ -244,6 +276,7 @@ async fn handle_message(
             }
 
             info!("Valid submission for job {}", job_id);
+            state.metrics.inc_accepted();
             Some(ServerMessage::SubmitResult {
                 id, status: SubmitStatus::Accepted,
                 message: None,

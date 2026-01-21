@@ -76,12 +76,13 @@ impl TemplateManager {
         self.client.clone()
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self, metrics: Arc<crate::metrics::Metrics>) {
         info!("Template manager starting");
         
-        // Initial fetch
         if let Err(e) = self.refresh_template().await {
             error!("Initial template fetch failed: {}", e);
+        } else {
+            metrics.inc_templates();
         }
 
         let mut ticker = interval(self.refresh_interval);
@@ -90,19 +91,18 @@ impl TemplateManager {
         loop {
             ticker.tick().await;
 
-            // Check for new block
             match self.client.get_info().await {
                 Ok(info) => {
                     if info.height != last_height {
-                        info!("New block detected at height {}", info.height);
+                        info!("New block at height {}", info.height);
                         last_height = info.height;
-                        if let Err(e) = self.refresh_template().await {
-                            warn!("Template refresh failed: {}", e);
+                        if self.refresh_template().await.is_ok() {
+                            metrics.inc_templates();
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to get daemon info: {}", e);
+                    warn!("Daemon info failed: {}", e);
                 }
             }
         }
