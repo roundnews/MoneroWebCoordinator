@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::ratelimit::SessionLimits;
@@ -163,5 +163,29 @@ impl SessionManager {
 
     pub fn active_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Remove sessions that have been idle for longer than the specified duration
+    pub fn cleanup_idle(&self, max_idle: Duration) -> usize {
+        let now = Instant::now();
+        let mut removed = 0;
+        
+        // Collect IDs to remove (can't modify while iterating)
+        let to_remove: Vec<String> = self.sessions
+            .iter()
+            .filter(|entry| now.duration_since(entry.value().last_activity) > max_idle)
+            .map(|entry| entry.key().clone())
+            .collect();
+        
+        for id in to_remove {
+            self.remove_session(&id);
+            removed += 1;
+        }
+        
+        if removed > 0 {
+            tracing::info!("Cleaned up {} idle sessions", removed);
+        }
+        
+        removed
     }
 }

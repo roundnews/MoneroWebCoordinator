@@ -74,6 +74,16 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Idle session cleanup (every 60 seconds, remove sessions idle > 5 minutes)
+    let session_mgr_cleanup = session_manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            session_mgr_cleanup.cleanup_idle(std::time::Duration::from_secs(300));
+        }
+    });
+
     server::run(config, template_rx, rpc_client, session_manager, job_manager, validator, metrics).await?;
 
     Ok(())
