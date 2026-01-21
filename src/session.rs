@@ -3,6 +3,8 @@ use std::net::IpAddr;
 use std::time::Instant;
 use uuid::Uuid;
 
+use crate::ratelimit::SessionLimits;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
     Connected,
@@ -10,7 +12,6 @@ pub enum SessionState {
     Closed,
 }
 
-#[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,
     pub ip: IpAddr,
@@ -21,10 +22,11 @@ pub struct Session {
     pub current_reserved_value: Option<Vec<u8>>,
     pub connected_at: Instant,
     pub last_activity: Instant,
+    pub limits: SessionLimits,
 }
 
 impl Session {
-    pub fn new(ip: IpAddr) -> Self {
+    pub fn new(ip: IpAddr, messages_per_second: u32, submits_per_minute: u32) -> Self {
         let now = Instant::now();
         Self {
             id: Uuid::new_v4().to_string(),
@@ -36,6 +38,7 @@ impl Session {
             current_reserved_value: None,
             connected_at: now,
             last_activity: now,
+            limits: SessionLimits::new(messages_per_second, submits_per_minute),
         }
     }
 
@@ -54,20 +57,49 @@ impl Session {
     pub fn touch(&mut self) {
         self.last_activity = Instant::now();
     }
+
+    pub fn check_message_limit(&mut self) -> bool {
+        self.limits.messages.check()
+    }
+
+    pub fn check_submit_limit(&mut self) -> bool {
+        self.limits.submits.check()
+    }
+}
+
+impl Clone for Session {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            ip: self.ip,
+            state: self.state,
+            client_version: self.client_version.clone(),
+            threads: self.threads,
+            current_job_id: self.current_job_id.clone(),
+            current_reserved_value: self.current_reserved_value.clone(),
+            connected_at: self.connected_at,
+            last_activity: self.last_activity,
+            limits: SessionLimits::new(20, 120), // Default values for clones
+        }
+    }
 }
 
 pub struct SessionManager {
     sessions: DashMap<String, Session>,
     ip_counts: DashMap<IpAddr, usize>,
     max_per_ip: usize,
+    messages_per_second: u32,
+    submits_per_minute: u32,
 }
 
 impl SessionManager {
-    pub fn new(max_per_ip: usize) -> Self {
+    pub fn new(max_per_ip: usize, messages_per_second: u32, submits_per_minute: u32) -> Self {
         Self {
             sessions: DashMap::new(),
             ip_counts: DashMap::new(),
             max_per_ip,
+            messages_per_second,
+            submits_per_minute,
         }
     }
 
@@ -78,7 +110,7 @@ impl SessionManager {
         }
         *count += 1;
         
-        let session = Session::new(ip);
+        let session = Session::new(ip, self.messages_per_second, self.submits_per_minute);
         self.sessions.insert(session.id.clone(), session.clone());
         Some(session)
     }
@@ -96,11 +128,24 @@ impl SessionManager {
         }
     }
 
+    pub fn check_message_limit(&self, id: &str) -> bool {
+        if let Some(mut session) = self.sessions.get_mut(id) {
+            return session.check_message_limit();
+        }
+        false
+    }
+
+    pub fn check_submit_limit(&self, id: &str) -> bool {
+        if let Some(mut session) = self.sessions.get_mut(id) {
+            return session.check_submit_limit();
+        }
+        false
+    }
+
     pub fn remove_session(&self, id: &str) {
         if let Some((_, session)) = self.sessions.remove(id) {
             let mut count = self.ip_counts.entry(session.ip).or_insert(0);
             *count = count.saturating_sub(1);
-            // Clean up entry if count reaches zero to prevent unbounded growth
             if *count == 0 {
                 drop(count);
                 self.ip_counts.remove(&session.ip);
