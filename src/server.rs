@@ -17,16 +17,20 @@ use anyhow::Result;
 use tokio::sync::watch;
 
 use crate::config::Config;
-use crate::protocol::{ClientMessage, ServerMessage, ErrorCode};
+use crate::jobs::JobManager;
+use crate::protocol::{ClientMessage, ServerMessage, ErrorCode, SubmitStatus};
 use crate::rpc::MonerodClient;
-use crate::session::SessionManager;
+use crate::session::{SessionManager, SessionState};
 use crate::template::TemplateState;
+use crate::validator::SubmissionValidator;
 
 #[derive(Clone)]
 pub struct AppState {
     pub template_rx: watch::Receiver<Option<TemplateState>>,
     pub rpc_client: Arc<MonerodClient>,
     pub session_manager: Arc<SessionManager>,
+    pub job_manager: Arc<JobManager>,
+    pub validator: Arc<SubmissionValidator>,
     pub config: Config,
 }
 
@@ -35,11 +39,11 @@ pub async fn run(
     template_rx: watch::Receiver<Option<TemplateState>>,
     rpc_client: Arc<MonerodClient>,
     session_manager: Arc<SessionManager>,
+    job_manager: Arc<JobManager>,
+    validator: Arc<SubmissionValidator>,
 ) -> Result<()> {
     let state = AppState {
-        template_rx,
-        rpc_client,
-        session_manager,
+        template_rx, rpc_client, session_manager, job_manager, validator,
         config: config.clone(),
     };
 
@@ -108,8 +112,32 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
                 if result.is_err() {
                     break;
                 }
-                // Template updated - would send job here
-                state.session_manager.update_session(&session_id, |s| s.touch());
+                
+                // Send new job when template updates
+                let template_opt = template_rx.borrow().clone();
+                if let Some(template) = template_opt {
+                    if let Some(sess) = state.session_manager.get_session(&session_id) {
+                        if sess.state == SessionState::Ready {
+                            let job = state.job_manager.create_job(&template, &session_id);
+                            state.session_manager.update_session(&session_id, |s| {
+                                s.update_job(job.job_id.clone(), job.reserved_value.clone());
+                            });
+                            
+                            let msg = ServerMessage::Job {
+                                job_id: job.job_id,
+                                blob_hex: job.blob_hex,
+                                reserved_offset: job.reserved_offset,
+                                reserved_value_hex: hex::encode(&job.reserved_value),
+                                target_hex: job.target_hex,
+                                height: job.height,
+                                seed_hash: job.seed_hash,
+                            };
+                            if socket.send(Message::Text(serde_json::to_string(&msg).unwrap())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             msg = socket.recv() => {
                 match msg {
@@ -155,6 +183,25 @@ async fn handle_message(
             state.session_manager.update_session(session_id, |s| {
                 s.set_ready(client_version.clone(), threads);
             });
+            
+            // Send initial job if template available
+            let template_opt = state.template_rx.borrow().clone();
+            if let Some(template) = template_opt {
+                let job = state.job_manager.create_job(&template, session_id);
+                state.session_manager.update_session(session_id, |s| {
+                    s.update_job(job.job_id.clone(), job.reserved_value.clone());
+                });
+                return Some(ServerMessage::Job {
+                    job_id: job.job_id,
+                    blob_hex: job.blob_hex,
+                    reserved_offset: job.reserved_offset,
+                    reserved_value_hex: hex::encode(&job.reserved_value),
+                    target_hex: job.target_hex,
+                    height: job.height,
+                    seed_hash: job.seed_hash,
+                });
+            }
+            
             Some(ServerMessage::Stats {
                 id: None,
                 session_id: session_id.to_string(),
@@ -166,12 +213,40 @@ async fn handle_message(
             state.session_manager.update_session(session_id, |s| s.touch());
             Some(ServerMessage::Pong { id })
         }
-        ClientMessage::Submit { id, .. } => {
-            // Placeholder - full validation in Part 4
+        ClientMessage::Submit { id, job_id, blob_hex } => {
+            let job = match state.job_manager.get_job(&job_id) {
+                Some(j) => j,
+                None => return Some(ServerMessage::SubmitResult {
+                    id, status: SubmitStatus::Rejected,
+                    message: Some("Unknown job".into()),
+                }),
+            };
+
+            // Check if stale
+            let current_template_id = {
+                let template_ref = state.template_rx.borrow();
+                template_ref.as_ref().map(|t| t.template_id).unwrap_or(0)
+            };
+            
+            if state.job_manager.is_stale(&job, current_template_id) {
+                return Some(ServerMessage::SubmitResult {
+                    id, status: SubmitStatus::Stale,
+                    message: Some("Job expired".into()),
+                });
+            }
+
+            // Validate blob
+            if let Err(e) = state.validator.validate_blob(&blob_hex, &job) {
+                return Some(ServerMessage::SubmitResult {
+                    id, status: SubmitStatus::Rejected,
+                    message: Some(e.to_string()),
+                });
+            }
+
+            info!("Valid submission for job {}", job_id);
             Some(ServerMessage::SubmitResult {
-                id,
-                status: crate::protocol::SubmitStatus::Error,
-                message: Some("Submit validation not yet implemented".to_string()),
+                id, status: SubmitStatus::Accepted,
+                message: None,
             })
         }
     }
