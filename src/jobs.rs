@@ -2,8 +2,15 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use num_bigint::BigUint;
+use once_cell::sync::Lazy;
 
 use crate::template::TemplateState;
+
+// Pre-compute 2^256 once for efficiency
+static MAX_TARGET: Lazy<BigUint> = Lazy::new(|| {
+    let two: BigUint = 2u32.into();
+    two.pow(256)
+});
 
 #[derive(Clone, Debug)]
 pub struct Job {
@@ -97,13 +104,9 @@ fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
         return [0xff; 32];
     }
 
-    // Compute 2^256
-    let two: BigUint = 2u32.into();
-    let max_target: BigUint = two.pow(256);
-
     // Target = 2^256 / difficulty
     let diff_big: BigUint = difficulty.into();
-    let target_big = &max_target / &diff_big;
+    let target_big = &*MAX_TARGET / &diff_big;
 
     // Convert to 32-byte little-endian array
     let target_bytes = target_big.to_bytes_le();
