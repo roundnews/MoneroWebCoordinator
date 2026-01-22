@@ -83,6 +83,12 @@ impl SubmissionValidator {
         let hash = vm.calculate_hash(blob)
             .map_err(|e| CoordinatorError::Validation(format!("Hash computation failed: {}", e)))?;
 
+        if hash.len() != 32 {
+            return Err(CoordinatorError::Validation(
+                format!("Unexpected hash length: expected 32, got {}", hash.len())
+            ));
+        }
+
         let mut result = [0u8; 32];
         result.copy_from_slice(&hash);
         Ok(result)
