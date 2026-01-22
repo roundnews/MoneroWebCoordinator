@@ -50,14 +50,12 @@ impl SubmissionValidator {
         Ok(())
     }
 
-    pub fn validate_blob(&self, blob_hex: &str, job: &Job) -> Result<Vec<u8>, CoordinatorError> {
-        let blob = hex::decode(blob_hex)
-            .map_err(|_| CoordinatorError::Validation("Invalid hex".into()))?;
-
+    pub fn validate_submission(&self, blob: &[u8], job: &Job) -> Result<(), CoordinatorError> {
         if blob.len() < self.min_blob_len {
             return Err(CoordinatorError::Validation("Blob too short".into()));
         }
 
+        // Verify reserved region still matches
         let offset = job.reserved_offset;
         let reserved = &job.reserved_value;
         
@@ -71,7 +69,7 @@ impl SubmissionValidator {
             }
         }
 
-        Ok(blob)
+        Ok(())
     }
 
     /// Compute RandomX hash of the blob

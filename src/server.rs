@@ -230,8 +230,8 @@ async fn handle_message(
             state.session_manager.update_session(session_id, |s| s.touch());
             Some(ServerMessage::Pong { id })
         }
-        ClientMessage::Submit { id, job_id, blob_hex } => {
-            // Check submit rate limit
+        ClientMessage::Submit { id, job_id, nonce } => {
+            // Rate limit check (unchanged)
             if !state.session_manager.check_submit_limit(session_id) {
                 state.metrics.inc_rate_limits();
                 return Some(ServerMessage::SubmitResult {
@@ -241,6 +241,7 @@ async fn handle_message(
             }
             state.metrics.inc_submissions();
 
+            // Get job
             let job = match state.job_manager.get_job(&job_id) {
                 Some(j) => j,
                 None => {
@@ -252,7 +253,7 @@ async fn handle_message(
                 }
             };
 
-            // Check if stale
+            // Check stale
             let current_template_id = {
                 let template_ref = state.template_rx.borrow();
                 template_ref.as_ref().map(|t| t.template_id).unwrap_or(0)
@@ -266,19 +267,28 @@ async fn handle_message(
                 });
             }
 
-            // Validate blob structure
-            let blob = match state.validator.validate_blob(&blob_hex, &job) {
+            // Reconstruct blob with nonce
+            let blob = match job.apply_nonce(&nonce) {
                 Ok(b) => b,
                 Err(e) => {
                     state.metrics.inc_rejected();
                     return Some(ServerMessage::SubmitResult {
                         id, status: SubmitStatus::Rejected,
-                        message: Some(e.to_string()),
+                        message: Some(e),
                     });
                 }
             };
 
-            // Before job validation, ensure VM is initialized
+            // Validate reconstructed blob
+            if let Err(e) = state.validator.validate_submission(&blob, &job) {
+                state.metrics.inc_rejected();
+                return Some(ServerMessage::SubmitResult {
+                    id, status: SubmitStatus::Rejected,
+                    message: Some(e.to_string()),
+                });
+            }
+
+            // Init RandomX VM if needed
             if let Err(e) = state.validator.init_vm(&job.seed_hash) {
                 warn!("Failed to init RandomX VM: {}", e);
                 state.metrics.inc_rejected();
@@ -288,7 +298,7 @@ async fn handle_message(
                 });
             }
 
-            // Compute hash with RandomX
+            // Compute hash
             let hash = match state.validator.compute_hash(&blob) {
                 Ok(h) => h,
                 Err(e) => {
@@ -299,6 +309,8 @@ async fn handle_message(
                     });
                 }
             };
+
+            // Check target
             let target = hex::decode(&job.target_hex).unwrap_or_default();
             let mut target_arr = [0u8; 32];
             if target.len() == 32 {
@@ -313,12 +325,13 @@ async fn handle_message(
                 });
             }
 
-            info!("Valid submission for job {} - hash meets target!", job_id);
+            info!("Valid submission for job {}", job_id);
             
-            // Submit block to monerod
+            // Submit to monerod using reconstructed blob
+            let blob_hex = hex::encode(&blob);
             match state.rpc_client.submit_block(&blob_hex).await {
                 Ok(status) => {
-                    info!("Block submitted to daemon: {}", status);
+                    info!("Block submitted: {}", status);
                     state.metrics.inc_accepted();
                     Some(ServerMessage::SubmitResult {
                         id, status: SubmitStatus::Accepted,

@@ -6,6 +6,10 @@ use once_cell::sync::Lazy;
 
 use crate::template::TemplateState;
 
+// Nonce is at byte offset 39 in the block hashing blob (standard Monero position)
+pub const NONCE_OFFSET: usize = 39;
+pub const NONCE_SIZE: usize = 4;
+
 // Pre-compute 2^256 once for efficiency
 static MAX_TARGET: Lazy<BigUint> = Lazy::new(|| {
     let two: BigUint = 2u32.into();
@@ -23,6 +27,30 @@ pub struct Job {
     pub height: u64,
     pub seed_hash: String,
     pub created_at: Instant,
+}
+
+impl Job {
+    /// Reconstruct the full blob by inserting the nonce at the correct position
+    pub fn apply_nonce(&self, nonce_hex: &str) -> Result<Vec<u8>, String> {
+        let nonce_bytes = hex::decode(nonce_hex)
+            .map_err(|_| "Invalid nonce hex".to_string())?;
+
+        if nonce_bytes.len() != NONCE_SIZE {
+            return Err(format!("Nonce must be {} bytes", NONCE_SIZE));
+        }
+
+        let mut blob = hex::decode(&self.blob_hex)
+            .map_err(|_| "Invalid stored blob".to_string())?;
+
+        if NONCE_OFFSET + NONCE_SIZE > blob.len() {
+            return Err("Blob too short for nonce".to_string());
+        }
+
+        // Insert nonce at offset 39
+        blob[NONCE_OFFSET..NONCE_OFFSET + NONCE_SIZE].copy_from_slice(&nonce_bytes);
+
+        Ok(blob)
+    }
 }
 
 pub struct JobManager {
@@ -164,5 +192,101 @@ mod tests {
             let target = difficulty_to_target(*difficulty);
             assert_eq!(target.len(), 32);
         }
+    }
+
+    #[test]
+    fn test_apply_nonce_success() {
+        // Create a test job with a valid blob
+        let blob = vec![0u8; 76]; // Minimum valid blob size
+        let job = Job {
+            job_id: "test_job".to_string(),
+            template_id: 1,
+            blob_hex: hex::encode(&blob),
+            reserved_offset: 50,
+            reserved_value: vec![1, 2, 3, 4],
+            target_hex: "ffffffff".to_string(),
+            height: 100,
+            seed_hash: "abcd".to_string(),
+            created_at: Instant::now(),
+        };
+
+        // Test with valid 4-byte nonce (8 hex chars)
+        let nonce_hex = "12345678";
+        let result = job.apply_nonce(nonce_hex);
+        assert!(result.is_ok());
+
+        let reconstructed = result.unwrap();
+        assert_eq!(reconstructed.len(), blob.len());
+        
+        // Verify nonce was inserted at correct position
+        assert_eq!(&reconstructed[NONCE_OFFSET..NONCE_OFFSET + NONCE_SIZE], &[0x12, 0x34, 0x56, 0x78]);
+    }
+
+    #[test]
+    fn test_apply_nonce_invalid_hex() {
+        let blob = vec![0u8; 76];
+        let job = Job {
+            job_id: "test_job".to_string(),
+            template_id: 1,
+            blob_hex: hex::encode(&blob),
+            reserved_offset: 50,
+            reserved_value: vec![1, 2, 3, 4],
+            target_hex: "ffffffff".to_string(),
+            height: 100,
+            seed_hash: "abcd".to_string(),
+            created_at: Instant::now(),
+        };
+
+        // Test with invalid hex
+        let result = job.apply_nonce("ZZZZZZZZ");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Invalid nonce hex");
+    }
+
+    #[test]
+    fn test_apply_nonce_wrong_size() {
+        let blob = vec![0u8; 76];
+        let job = Job {
+            job_id: "test_job".to_string(),
+            template_id: 1,
+            blob_hex: hex::encode(&blob),
+            reserved_offset: 50,
+            reserved_value: vec![1, 2, 3, 4],
+            target_hex: "ffffffff".to_string(),
+            height: 100,
+            seed_hash: "abcd".to_string(),
+            created_at: Instant::now(),
+        };
+
+        // Test with wrong size nonce (too short)
+        let result = job.apply_nonce("1234");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Nonce must be 4 bytes"));
+
+        // Test with wrong size nonce (too long)
+        let result = job.apply_nonce("123456789ABC");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Nonce must be 4 bytes"));
+    }
+
+    #[test]
+    fn test_apply_nonce_blob_too_short() {
+        // Create a blob that's too short for the nonce offset
+        let blob = vec![0u8; 30]; // Less than NONCE_OFFSET + NONCE_SIZE
+        let job = Job {
+            job_id: "test_job".to_string(),
+            template_id: 1,
+            blob_hex: hex::encode(&blob),
+            reserved_offset: 20,
+            reserved_value: vec![1, 2, 3, 4],
+            target_hex: "ffffffff".to_string(),
+            height: 100,
+            seed_hash: "abcd".to_string(),
+            created_at: Instant::now(),
+        };
+
+        let result = job.apply_nonce("12345678");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Blob too short for nonce");
     }
 }
