@@ -13,7 +13,7 @@ pub enum ClientMessage {
     Submit {
         id: String,
         job_id: String,
-        nonce: String,  // 8-byte nonce as hex (16 chars)
+        nonce: String,  // 4-byte nonce as hex (8 chars)
     },
     Ping {
         id: String,
