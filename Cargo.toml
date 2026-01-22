@@ -24,3 +24,5 @@ uuid = { version = "1", features = ["v4"] }
 dashmap = "5"
 randomx-rs = "1.2"
 parking_lot = "0.12"
+num-bigint = "0.4"
+num-traits = "0.2"
