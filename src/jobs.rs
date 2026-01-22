@@ -1,8 +1,16 @@
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+use num_bigint::BigUint;
+use once_cell::sync::Lazy;
 
 use crate::template::TemplateState;
+
+// Pre-compute 2^256 once for efficiency
+static MAX_TARGET: Lazy<BigUint> = Lazy::new(|| {
+    let two: BigUint = 2u32.into();
+    two.pow(256)
+});
 
 #[derive(Clone, Debug)]
 pub struct Job {
@@ -95,21 +103,66 @@ fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
     if difficulty <= 1 {
         return [0xff; 32];
     }
-    
+
     // Target = 2^256 / difficulty
-    // We compute this by dividing the maximum 128-bit value by difficulty
-    // and placing the result in the upper 16 bytes of the 32-byte target array
-    // (in little-endian format, bytes 16-31)
+    let diff_big: BigUint = difficulty.into();
+    let target_big = &*MAX_TARGET / &diff_big;
+
+    // Convert to 32-byte little-endian array
+    let target_bytes = target_big.to_bytes_le();
     
     let mut target = [0u8; 32];
-    
-    // For difficulties that fit in u64, use simplified calculation
-    // Compute high 128 bits of (2^256-1) / difficulty approximation
-    let target_value: u128 = u128::MAX / difficulty as u128;
-    let target_bytes = target_value.to_le_bytes();
-    
-    // Place in upper portion of target (little-endian, so bytes 16-31)
-    target[16..32].copy_from_slice(&target_bytes);
-    
+    let len = target_bytes.len().min(32);
+    target[..len].copy_from_slice(&target_bytes[..len]);
+
     target
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_difficulty_to_target_low() {
+        // For difficulty 1, should return max target
+        let target = difficulty_to_target(1);
+        assert_eq!(target, [0xff; 32]);
+    }
+
+    #[test]
+    fn test_difficulty_to_target_basic() {
+        // For difficulty 2, target should be 2^255 (half of max)
+        let target = difficulty_to_target(2);
+        
+        // Verify it's a valid 32-byte array with non-zero values
+        assert_ne!(target, [0u8; 32]);
+        
+        // For difficulty 2, result is 2^255
+        // In little-endian: bytes[0..30] = 0x00, byte[31] = 0x80
+        assert_eq!(target[31], 0x80); // MSB should be 0x80 for 2^255
+        assert_eq!(target[30], 0x00);
+    }
+
+    #[test]
+    fn test_difficulty_to_target_high() {
+        // For high difficulty, target should be small
+        let target = difficulty_to_target(1_000_000);
+        
+        // Should have non-zero bytes in lower positions
+        let has_nonzero = target.iter().any(|&b| b != 0);
+        assert!(has_nonzero, "Target should have at least some non-zero bytes");
+        
+        // High bytes should be zero for high difficulty
+        assert_eq!(target[31], 0);
+        assert_eq!(target[30], 0);
+    }
+
+    #[test]
+    fn test_difficulty_to_target_produces_32_bytes() {
+        // Verify all difficulties produce 32-byte targets
+        for difficulty in [1, 2, 10, 100, 1000, 10000, 100000, 1_000_000].iter() {
+            let target = difficulty_to_target(*difficulty);
+            assert_eq!(target.len(), 32);
+        }
+    }
 }
