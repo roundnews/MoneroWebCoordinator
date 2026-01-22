@@ -278,8 +278,27 @@ async fn handle_message(
                 }
             };
 
-            // Compute hash and verify it meets target
-            let hash = state.validator.compute_hash(&blob);
+            // Before job validation, ensure VM is initialized
+            if let Err(e) = state.validator.init_vm(&job.seed_hash) {
+                warn!("Failed to init RandomX VM: {}", e);
+                state.metrics.inc_rejected();
+                return Some(ServerMessage::SubmitResult {
+                    id, status: SubmitStatus::Rejected,
+                    message: Some("Hash verification unavailable".into()),
+                });
+            }
+
+            // Compute hash with RandomX
+            let hash = match state.validator.compute_hash(&blob) {
+                Ok(h) => h,
+                Err(e) => {
+                    state.metrics.inc_rejected();
+                    return Some(ServerMessage::SubmitResult {
+                        id, status: SubmitStatus::Rejected,
+                        message: Some(e.to_string()),
+                    });
+                }
+            };
             let target = hex::decode(&job.target_hex).unwrap_or_default();
             let mut target_arr = [0u8; 32];
             if target.len() == 32 {
