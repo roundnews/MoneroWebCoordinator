@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::ratelimit::SessionLimits;
@@ -88,22 +88,30 @@ pub struct SessionManager {
     sessions: DashMap<String, Session>,
     ip_counts: DashMap<IpAddr, usize>,
     max_per_ip: usize,
+    max_total: usize,
     messages_per_second: u32,
     submits_per_minute: u32,
 }
 
 impl SessionManager {
-    pub fn new(max_per_ip: usize, messages_per_second: u32, submits_per_minute: u32) -> Self {
+    pub fn new(max_per_ip: usize, max_total: usize, messages_per_second: u32, submits_per_minute: u32) -> Self {
         Self {
             sessions: DashMap::new(),
             ip_counts: DashMap::new(),
             max_per_ip,
+            max_total,
             messages_per_second,
             submits_per_minute,
         }
     }
 
     pub fn create_session(&self, ip: IpAddr) -> Option<Session> {
+        // Check global limit FIRST
+        if self.sessions.len() >= self.max_total {
+            return None;
+        }
+        
+        // Then check per-IP limit
         let mut count = self.ip_counts.entry(ip).or_insert(0);
         if *count >= self.max_per_ip {
             return None;
@@ -155,5 +163,29 @@ impl SessionManager {
 
     pub fn active_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Remove sessions that have been idle for longer than the specified duration
+    pub fn cleanup_idle(&self, max_idle: Duration) -> usize {
+        let now = Instant::now();
+        let mut removed = 0;
+        
+        // Collect IDs to remove (can't modify while iterating)
+        let to_remove: Vec<String> = self.sessions
+            .iter()
+            .filter(|entry| now.duration_since(entry.value().last_activity) > max_idle)
+            .map(|entry| entry.key().clone())
+            .collect();
+        
+        for id in to_remove {
+            self.remove_session(&id);
+            removed += 1;
+        }
+        
+        if removed > 0 {
+            tracing::info!("Cleaned up {} idle sessions", removed);
+        }
+        
+        removed
     }
 }

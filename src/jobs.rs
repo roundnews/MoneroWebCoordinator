@@ -92,19 +92,24 @@ impl JobManager {
 }
 
 fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
-    if difficulty == 0 {
+    if difficulty <= 1 {
         return [0xff; 32];
     }
     
-    // Target = 2^256 / difficulty (simplified for compact target)
-    let mut target = [0u8; 32];
-    let max_val: u128 = u64::MAX as u128;
-    let result = max_val / difficulty as u128;
+    // Target = 2^256 / difficulty
+    // We compute this by dividing the maximum 128-bit value by difficulty
+    // and placing the result in the upper 16 bytes of the 32-byte target array
+    // (in little-endian format, bytes 16-31)
     
-    // Set last 8 bytes (little endian target format)
-    for (i, byte) in result.to_le_bytes().iter().take(8).enumerate() {
-        target[24 + i] = *byte;
-    }
+    let mut target = [0u8; 32];
+    
+    // For difficulties that fit in u64, use simplified calculation
+    // Compute high 128 bits of (2^256-1) / difficulty approximation
+    let target_value: u128 = u128::MAX / difficulty as u128;
+    let target_bytes = target_value.to_le_bytes();
+    
+    // Place in upper portion of target (little-endian, so bytes 16-31)
+    target[16..32].copy_from_slice(&target_bytes);
     
     target
 }

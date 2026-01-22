@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
 
     let session_manager = Arc::new(SessionManager::new(
         config.server.max_connections_per_ip,
+        config.server.max_connections,
         config.limits.messages_per_second,
         config.limits.submits_per_minute,
     ));
@@ -70,6 +71,16 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             job_mgr_clone.cleanup_old_jobs(job_ttl);
+        }
+    });
+
+    // Idle session cleanup (every 60 seconds, remove sessions idle > 5 minutes)
+    let session_mgr_cleanup = session_manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            session_mgr_cleanup.cleanup_idle(std::time::Duration::from_secs(300));
         }
     });
 
