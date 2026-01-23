@@ -23,6 +23,8 @@ pub struct Session {
     pub connected_at: Instant,
     pub last_activity: Instant,
     pub limits: SessionLimits,
+    messages_per_second: u32,
+    submits_per_minute: u32,
 }
 
 impl Session {
@@ -39,6 +41,8 @@ impl Session {
             connected_at: now,
             last_activity: now,
             limits: SessionLimits::new(messages_per_second, submits_per_minute),
+            messages_per_second,
+            submits_per_minute,
         }
     }
 
@@ -79,7 +83,9 @@ impl Clone for Session {
             current_reserved_value: self.current_reserved_value.clone(),
             connected_at: self.connected_at,
             last_activity: self.last_activity,
-            limits: SessionLimits::new(20, 120), // Default values for clones
+            limits: SessionLimits::new(self.messages_per_second, self.submits_per_minute),
+            messages_per_second: self.messages_per_second,
+            submits_per_minute: self.submits_per_minute,
         }
     }
 }
