@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use crate::config::Config;
 use crate::jobs::JobManager;
 use crate::metrics::Metrics;
-use crate::protocol::{ClientMessage, ServerMessage, ErrorCode, SubmitStatus};
+use crate::protocol::{ClientMessage, ServerMessage, ErrorCode, SubmitStatus, StatsPayload, PolicyPayload, JobPayload, SubmitResultPayload};
 use crate::rpc::MonerodClient;
 use crate::session::{SessionManager, SessionState};
 use crate::template::TemplateState;
@@ -129,14 +129,26 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, ip: IpAddr) {
                                 s.update_job(job.job_id.clone(), job.reserved_value.clone());
                             });
                             
+                            let expires_at_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64 + state.config.jobs.job_ttl_ms;
+                            
                             let msg = ServerMessage::Job {
-                                job_id: job.job_id,
-                                blob_hex: job.blob_hex,
-                                reserved_offset: job.reserved_offset,
-                                reserved_value_hex: hex::encode(&job.reserved_value),
-                                target_hex: job.target_hex,
-                                height: job.height,
-                                seed_hash: job.seed_hash,
+                                v: 1,
+                                id: None,
+                                payload: JobPayload {
+                                    job_id: job.job_id,
+                                    blob_hex: job.blob_hex,
+                                    reserved_offset: job.reserved_offset,
+                                    reserved_value_hex: hex::encode(&job.reserved_value),
+                                    target_hex: job.target_hex,
+                                    height: job.height,
+                                    seed_hash: job.seed_hash,
+                                    expires_at_ms,
+                                    share_target_hex: None,
+                                    algo: "randomx".to_string(),
+                                },
                             };
                             if socket.send(Message::Text(serde_json::to_string(&msg).unwrap())).await.is_err() {
                                 break;
@@ -195,9 +207,9 @@ async fn handle_message(
     msg: ClientMessage,
 ) -> Option<ServerMessage> {
     match msg {
-        ClientMessage::Hello { client_version, threads, .. } => {
+        ClientMessage::Hello { id, payload, .. } => {
             state.session_manager.update_session(session_id, |s| {
-                s.set_ready(client_version.clone(), threads);
+                s.set_ready(payload.miner_version.clone(), payload.threads);
             });
             
             // Send initial job if template available
@@ -208,47 +220,87 @@ async fn handle_message(
                 state.session_manager.update_session(session_id, |s| {
                     s.update_job(job.job_id.clone(), job.reserved_value.clone());
                 });
+                
+                let expires_at_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64 + state.config.jobs.job_ttl_ms;
+                
                 return Some(ServerMessage::Job {
-                    job_id: job.job_id,
-                    blob_hex: job.blob_hex,
-                    reserved_offset: job.reserved_offset,
-                    reserved_value_hex: hex::encode(&job.reserved_value),
-                    target_hex: job.target_hex,
-                    height: job.height,
-                    seed_hash: job.seed_hash,
+                    v: 1,
+                    id: id.clone(),
+                    payload: JobPayload {
+                        job_id: job.job_id,
+                        blob_hex: job.blob_hex,
+                        reserved_offset: job.reserved_offset,
+                        reserved_value_hex: hex::encode(&job.reserved_value),
+                        target_hex: job.target_hex,
+                        height: job.height,
+                        seed_hash: job.seed_hash,
+                        expires_at_ms,
+                        share_target_hex: None,
+                        algo: "randomx".to_string(),
+                    },
                 });
             }
             
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            
             Some(ServerMessage::Stats {
-                id: None,
-                session_id: session_id.to_string(),
-                submits_per_minute: state.config.limits.submits_per_minute,
-                messages_per_second: state.config.limits.messages_per_second,
+                v: 1,
+                id,
+                payload: StatsPayload {
+                    session_id: session_id.to_string(),
+                    submits_per_minute: state.config.limits.submits_per_minute,
+                    messages_per_second: state.config.limits.messages_per_second,
+                    policy: PolicyPayload {
+                        job_ttl_ms: state.config.jobs.job_ttl_ms,
+                        max_submits_per_min: state.config.limits.submits_per_minute,
+                        max_shares_per_min: state.config.limits.shares_per_minute,
+                    },
+                    server_time_ms: current_time,
+                    tip_height: template_opt.map(|t| t.height).unwrap_or(0),
+                },
             })
         }
-        ClientMessage::Ping { id } => {
+        ClientMessage::Ping { id, .. } => {
             state.session_manager.update_session(session_id, |s| s.touch());
-            Some(ServerMessage::Pong { id })
+            Some(ServerMessage::Pong { 
+                v: 1,
+                id, 
+                payload: crate::protocol::PongPayload {},
+            })
         }
-        ClientMessage::Submit { id, job_id, nonce } => {
+        ClientMessage::Submit { id, payload, .. } => {
             // Rate limit check (unchanged)
             if !state.session_manager.check_submit_limit(session_id) {
                 state.metrics.inc_rate_limits();
                 return Some(ServerMessage::SubmitResult {
-                    id, status: SubmitStatus::Error,
-                    message: Some("Submit rate exceeded".into()),
+                    v: 1,
+                    id, 
+                    payload: SubmitResultPayload {
+                        status: SubmitStatus::Error,
+                        message: Some("Submit rate exceeded".into()),
+                    },
                 });
             }
             state.metrics.inc_submissions();
 
             // Get job
-            let job = match state.job_manager.get_job(&job_id) {
+            let job = match state.job_manager.get_job(&payload.job_id) {
                 Some(j) => j,
                 None => {
                     state.metrics.inc_rejected();
                     return Some(ServerMessage::SubmitResult {
-                        id, status: SubmitStatus::Rejected,
-                        message: Some("Unknown job".into()),
+                        v: 1,
+                        id, 
+                        payload: SubmitResultPayload {
+                            status: SubmitStatus::Rejected,
+                            message: Some("Unknown job".into()),
+                        },
                     });
                 }
             };
@@ -262,19 +314,27 @@ async fn handle_message(
             if state.job_manager.is_stale(&job, current_template_id) {
                 state.metrics.inc_stale();
                 return Some(ServerMessage::SubmitResult {
-                    id, status: SubmitStatus::Stale,
-                    message: Some("Job expired".into()),
+                    v: 1,
+                    id, 
+                    payload: SubmitResultPayload {
+                        status: SubmitStatus::Stale,
+                        message: Some("Job expired".into()),
+                    },
                 });
             }
 
             // Reconstruct blob with nonce
-            let blob = match job.apply_nonce(&nonce) {
+            let blob = match job.apply_nonce(&payload.nonce) {
                 Ok(b) => b,
                 Err(e) => {
                     state.metrics.inc_rejected();
                     return Some(ServerMessage::SubmitResult {
-                        id, status: SubmitStatus::Rejected,
-                        message: Some(e),
+                        v: 1,
+                        id, 
+                        payload: SubmitResultPayload {
+                            status: SubmitStatus::Rejected,
+                            message: Some(e),
+                        },
                     });
                 }
             };
@@ -283,8 +343,12 @@ async fn handle_message(
             if let Err(e) = state.validator.validate_submission(&blob, &job) {
                 state.metrics.inc_rejected();
                 return Some(ServerMessage::SubmitResult {
-                    id, status: SubmitStatus::Rejected,
-                    message: Some(e.to_string()),
+                    v: 1,
+                    id, 
+                    payload: SubmitResultPayload {
+                        status: SubmitStatus::Rejected,
+                        message: Some(e.to_string()),
+                    },
                 });
             }
 
@@ -293,8 +357,12 @@ async fn handle_message(
                 warn!("Failed to init RandomX VM: {}", e);
                 state.metrics.inc_rejected();
                 return Some(ServerMessage::SubmitResult {
-                    id, status: SubmitStatus::Rejected,
-                    message: Some("Hash verification unavailable".into()),
+                    v: 1,
+                    id, 
+                    payload: SubmitResultPayload {
+                        status: SubmitStatus::Rejected,
+                        message: Some("Hash verification unavailable".into()),
+                    },
                 });
             }
 
@@ -304,8 +372,12 @@ async fn handle_message(
                 Err(e) => {
                     state.metrics.inc_rejected();
                     return Some(ServerMessage::SubmitResult {
-                        id, status: SubmitStatus::Rejected,
-                        message: Some(e.to_string()),
+                        v: 1,
+                        id, 
+                        payload: SubmitResultPayload {
+                            status: SubmitStatus::Rejected,
+                            message: Some(e.to_string()),
+                        },
                     });
                 }
             };
@@ -320,12 +392,16 @@ async fn handle_message(
             if !state.validator.check_meets_target(&hash, &target_arr) {
                 state.metrics.inc_rejected();
                 return Some(ServerMessage::SubmitResult {
-                    id, status: SubmitStatus::Rejected,
-                    message: Some("Hash does not meet target".into()),
+                    v: 1,
+                    id, 
+                    payload: SubmitResultPayload {
+                        status: SubmitStatus::Rejected,
+                        message: Some("Hash does not meet target".into()),
+                    },
                 });
             }
 
-            info!("Valid submission for job {}", job_id);
+            info!("Valid submission for job {}", payload.job_id);
             
             // Submit to monerod using reconstructed blob
             let blob_hex = hex::encode(&blob);
@@ -334,19 +410,31 @@ async fn handle_message(
                     info!("Block submitted: {}", status);
                     state.metrics.inc_accepted();
                     Some(ServerMessage::SubmitResult {
-                        id, status: SubmitStatus::Accepted,
-                        message: Some(format!("Block submitted: {}", status)),
+                        v: 1,
+                        id, 
+                        payload: SubmitResultPayload {
+                            status: SubmitStatus::Accepted,
+                            message: Some(format!("Block submitted: {}", status)),
+                        },
                     })
                 }
                 Err(e) => {
                     warn!("Block submission failed: {}", e);
                     state.metrics.inc_rejected();
                     Some(ServerMessage::SubmitResult {
-                        id, status: SubmitStatus::Rejected,
-                        message: Some(format!("Submission failed: {}", e)),
+                        v: 1,
+                        id, 
+                        payload: SubmitResultPayload {
+                            status: SubmitStatus::Rejected,
+                            message: Some(format!("Submission failed: {}", e)),
+                        },
                     })
                 }
             }
+        }
+        ClientMessage::Share { .. } => {
+            // Share messages are for telemetry only, no response needed
+            None
         }
     }
 }
